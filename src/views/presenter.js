@@ -41,7 +41,6 @@ export async function renderPresenter(root, go, id, query) {
         </div>
         <button class="btn run" data-act="run"></button>
         <div class="meter" aria-hidden="true"><span></span></div>
-        <p class="heard" aria-live="off"></p>
         <div class="spacer"></div>
         <div class="slide-nav" role="group" aria-label="Navigasi slide">
           <button class="btn icon-only ghost" data-act="prev" aria-label="Slide sebelumnya" title="Slide sebelumnya (←)">${icon('chevLeft')}</button>
@@ -70,6 +69,7 @@ export async function renderPresenter(root, go, id, query) {
           <div class="prompter-move"><div class="prompter-text"></div></div>
         </div>
         <div class="prompter-note" hidden></div>
+        <div class="heard-strip" hidden><b class="hs-state"></b><span class="hs-text"></span><small class="hs-meta"></small></div>
         <div class="progress" aria-hidden="true"><span></span></div>
       </section>
 
@@ -86,7 +86,10 @@ export async function renderPresenter(root, go, id, query) {
   const mover = $('.prompter-move', view);
   const viewport = $('.prompter-viewport', view);
   const note = $('.prompter-note', view);
-  const heardEl = $('.heard', view);
+  const strip = $('.heard-strip', view);
+  const stripState = $('.hs-state', strip);
+  const stripText = $('.hs-text', strip);
+  const stripMeta = $('.hs-meta', strip);
   const meter = $('.meter span', view);
   const runBtn = $('[data-act="run"]', view);
   const drawer = $('.drawer', view);
@@ -140,6 +143,10 @@ export async function renderPresenter(root, go, id, query) {
     lastStep: 0,
     lastConfirmAt: 0,
     ahead: 0, // perkiraan kata yang sudah terucap sejak potongan suara terakhir dikirim
+    runStartedAt: 0,
+    lastVoiceAt: 0,
+    lastHeardAt: 0,
+    lastHeardText: '',
     lastTick: 0,
     moveY: null,
   };
@@ -327,7 +334,7 @@ export async function renderPresenter(root, go, id, query) {
       runBtn.classList.toggle('live', state.running);
     }
     $('.meter', view).hidden = m !== 'voice';
-    heardEl.hidden = m !== 'voice';
+    strip.hidden = m !== 'voice' || !state.running;
   }
 
   function showNote(html, kind = 'info') {
@@ -405,6 +412,11 @@ export async function renderPresenter(root, go, id, query) {
     }
     state.running = true;
     state.lastStep = performance.now();
+    state.runStartedAt = performance.now();
+    state.lastVoiceAt = 0;
+    state.lastHeardAt = 0;
+    stripText.textContent = '';
+    stripMeta.textContent = '';
     startClock();
     renderModeUi();
   }
@@ -420,8 +432,32 @@ export async function renderPresenter(root, go, id, query) {
     renderModeUi();
   }
 
+  function updateStrip() {
+    if (!state.running || settings.mode !== 'voice') return;
+    const now = performance.now();
+    const since = now - state.runStartedAt;
+    let label = 'Mendengarkan';
+    let kind = '';
+    if (!state.lastVoiceAt && since > 4000) {
+      label = 'Belum ada suara dari mikrofon';
+      kind = 'warn';
+      stripText.textContent = 'Periksa pilihan mikrofon di Pengaturan, atau dekatkan mikrofon.';
+    } else if (state.lastVoiceAt && now - state.lastVoiceAt < 1500 && (!state.lastHeardAt || now - state.lastHeardAt > 4000) && since > 4000) {
+      label = 'Suara masuk, menunggu hasil';
+      kind = 'warn';
+    } else if (state.lastHeardAt && now - (state.lastConfirmAt || state.runStartedAt) > 5000 && now - state.lastVoiceAt < 1500) {
+      label = 'Terdengar, belum cocok dengan naskah';
+      kind = 'warn';
+    } else if (state.lastHeardAt) {
+      label = 'Terdengar';
+    }
+    stripState.textContent = label;
+    strip.dataset.kind = kind;
+  }
+
   function onLevel(e) {
     const { rms, speaking } = e.detail;
+    if (speaking) state.lastVoiceAt = performance.now();
     meter.style.transform = `scaleX(${Math.min(1, rms * 14)})`;
     view.classList.toggle('speaking', speaking);
   }
@@ -429,10 +465,14 @@ export async function renderPresenter(root, go, id, query) {
   function onHeard(e) {
     const { text, sentAt, latency } = e.detail;
     const dev = settings.engine === 'deepgram' ? 'Deepgram' : loadedDevice() === 'webgpu' ? 'GPU' : 'CPU';
-    heardEl.innerHTML = `<b>${(latency / 1000).toFixed(1).replace('.', ',')} dtk · ${dev}</b> ${esc(text.slice(-64))}`;
-    heardEl.title = 'Jeda pengenalan suara. Bila selalu di atas 2 detik, pilih model Cepat di Pengaturan.';
+    stripMeta.textContent = `${dev} · jeda ${(latency / 1000).toFixed(1).replace('.', ',')} dtk`;
     if (!text) return;
-    const r = alignHeard(words, state.confirmed, wordsToNorm(text));
+    state.lastHeardAt = performance.now();
+    state.lastHeardText = text;
+    stripText.textContent = text.length > 80 ? `…${text.slice(-80)}` : text;
+    // Lama tidak ada yang cocok (mungkin ada bagian yang dilewati): cari lebih luas.
+    const lost = performance.now() - (state.lastConfirmAt || state.runStartedAt) > 5000;
+    const r = alignHeard(words, state.confirmed, wordsToNorm(text), lost ? { back: 30, ahead: 160 } : undefined);
     if (!r) return;
     const next = r.index + 1;
     if (next <= state.confirmed) return;
@@ -480,11 +520,13 @@ export async function renderPresenter(root, go, id, query) {
       }
     } else if (settings.mode === 'voice' && follower) {
       // Hasil pengenalan selalu sedikit terlambat. Selama Anda bicara, sorotan maju
-      // mengikuti kecepatan bicara Anda (paling jauh 6 kata di depan hasil terakhir),
-      // lalu dikoreksi setiap hasil baru datang.
-      if (follower.isSpeaking()) {
+      // mengikuti kecepatan bicara Anda (paling jauh 4 kata di depan hasil terakhir),
+      // lalu dikoreksi setiap hasil baru datang. Tanpa kecocokan baru-baru ini,
+      // sorotan diam agar tidak menebak.
+      const fresh = state.lastConfirmAt && now - state.lastConfirmAt < 3000;
+      if (follower.isSpeaking() && fresh) {
         state.ahead += state.rate * dt;
-        const allowed = Math.min(N, state.confirmed + Math.min(6, Math.floor(state.ahead)));
+        const allowed = Math.min(N, state.confirmed + Math.min(4, Math.floor(state.ahead)));
         if (state.display < allowed && now - state.lastStep >= 1000 / (state.rate * 1.25)) {
           state.lastStep = now;
           setDisplay(state.display + 1, { reading: true });
@@ -882,7 +924,10 @@ export async function renderPresenter(root, go, id, query) {
     $('.timer span', view).textContent = formatDuration(t);
     $('.clock', view).textContent = clockFmt.format(new Date());
   }
-  const timerId = setInterval(updateTimer, 500);
+  const timerId = setInterval(() => {
+    updateTimer();
+    updateStrip();
+  }, 500);
   updateTimer();
 
   /* ---------- mulai ---------- */

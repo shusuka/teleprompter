@@ -1131,6 +1131,46 @@ body[data-view='present'] {
   transform-origin: left;
   transition: transform 300ms ease;
 }
+.heard-strip {
+  position: absolute;
+  z-index: 3;
+  left: 12px;
+  right: 12px;
+  bottom: 10px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: rgba(19, 22, 27, 0.92);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-2);
+  min-width: 0;
+}
+.heard-strip .hs-state {
+  flex: none;
+  font-weight: 650;
+  color: var(--accent);
+}
+.heard-strip[data-kind='warn'] {
+  border-color: rgba(251, 191, 36, 0.55);
+}
+.heard-strip[data-kind='warn'] .hs-state {
+  color: var(--warn);
+}
+.heard-strip .hs-text {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.heard-strip .hs-meta {
+  flex: none;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
 .prompter-note {
   position: absolute;
   z-index: 4;
