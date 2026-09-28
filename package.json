@@ -1,6 +1,6 @@
 {
   "name": "sorot",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Prompter paparan untuk narasumber: naskah menyala mengikuti suara di atas slide, dekat kamera.",
   "main": "electron/main.cjs",
   "scripts": {

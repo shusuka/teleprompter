@@ -198,12 +198,57 @@ ipcMain.handle('projects:create', async () => {
   return id;
 });
 
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const LOCKED = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
+// Di Windows, rename ke berkas yang sedang dibuka proses lain (antivirus, pengindeks)
+// gagal sesaat. Coba beberapa kali, lalu tulis langsung bila tetap terkunci.
+async function writeJsonSafely(file, text) {
+  const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  await fsp.writeFile(tmp, text, 'utf8');
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      await fsp.rename(tmp, file);
+      return;
+    } catch (err) {
+      if (!LOCKED.has(err.code)) {
+        await fsp.rm(tmp, { force: true });
+        throw err;
+      }
+      await wait(40 * (attempt + 1));
+    }
+  }
+  await fsp.rm(tmp, { force: true });
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await fsp.writeFile(file, text, 'utf8');
+      return;
+    } catch (err) {
+      if (!LOCKED.has(err.code) || attempt === 4) throw err;
+      await wait(100 * (attempt + 1));
+    }
+  }
+}
+
+// Simpanan untuk paparan yang sama dijalankan berurutan agar tidak saling tabrak.
+const saveQueues = new Map();
+
 ipcMain.handle('projects:save', async (_e, project) => {
   const dir = path.join(projectsRoot(), project.id);
-  await fsp.mkdir(dir, { recursive: true });
-  const tmp = path.join(dir, 'project.json.tmp');
-  await fsp.writeFile(tmp, JSON.stringify(project, null, 2), 'utf8');
-  await fsp.rename(tmp, path.join(dir, 'project.json'));
+  const text = JSON.stringify(project, null, 2);
+  const prev = saveQueues.get(project.id) || Promise.resolve();
+  const job = prev
+    .catch(() => {})
+    .then(async () => {
+      await fsp.mkdir(dir, { recursive: true });
+      await writeJsonSafely(path.join(dir, 'project.json'), text);
+    });
+  saveQueues.set(project.id, job);
+  try {
+    await job;
+  } finally {
+    if (saveQueues.get(project.id) === job) saveQueues.delete(project.id);
+  }
   return true;
 });
 
