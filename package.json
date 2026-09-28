@@ -68,6 +68,7 @@
     },
     "portable": {
       "artifactName": "${productName}-Portable-${version}.${ext}"
-    }
+    },
+    "electronDist": "node_modules/electron/dist"
   }
 }
