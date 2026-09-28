@@ -8,7 +8,8 @@
     "app:dev": "node scripts/dev.mjs",
     "build": "vite build",
     "start": "vite build && electron .",
-    "dist": "vite build && electron-builder --win --x64 --publish never"
+    "dist": "vite build && electron-builder --win --x64 --publish never",
+    "dist:local": "vite build && electron-builder --win --x64 --publish never -c.electronDist=node_modules/electron/dist"
   },
   "author": "shusuka",
   "license": "MIT",
@@ -68,7 +69,6 @@
     },
     "portable": {
       "artifactName": "${productName}-Portable-${version}.${ext}"
-    },
-    "electronDist": "node_modules/electron/dist"
+    }
   }
 }

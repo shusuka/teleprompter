@@ -47,6 +47,7 @@ Penanda `## Slide 2`, `[Slide 2]`, `Halaman 2:`, atau garis `---` di antara bagi
 npm install
 npm run app:dev     # Vite + Electron
 npm run dist        # membuat installer & versi portable di folder release/
+npm run dist:local  # sama, memakai Electron dari node_modules (bila unduhan/ekstrak diblokir antivirus)
 ```
 
 Membuat tag `v*` (mis. `v1.0.0`) di GitHub akan menjalankan workflow yang membangun exe dan melampirkannya ke halaman Releases.
