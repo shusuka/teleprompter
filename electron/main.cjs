@@ -1,0 +1,376 @@
+const { app, BrowserWindow, protocol, ipcMain, screen, shell, dialog, session, systemPreferences } = require('electron');
+const path = require('node:path');
+const fs = require('node:fs');
+const fsp = require('node:fs/promises');
+const { execFile } = require('node:child_process');
+const crypto = require('node:crypto');
+const os = require('node:os');
+
+const DEV_URL = process.env.SOROT_DEV_URL;
+const DIST = path.join(__dirname, '..', 'dist');
+const HOST = 'sorot';
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'app',
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true, codeCache: true },
+  },
+]);
+
+// Pengenal suara berjalan di renderer; jangan biarkan Chromium/Windows memperlambatnya
+// saat jendela tertutup jendela lain (mis. ketika layar penonton aktif).
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+
+function boostRenderer(win) {
+  try {
+    const pid = win.webContents.getOSProcessId();
+    if (pid) os.setPriority(pid, os.constants.priority.PRIORITY_ABOVE_NORMAL);
+  } catch {
+    /* tidak semua sistem mengizinkan */
+  }
+}
+
+// Satu instance saja: membuka exe kedua kali cukup memunculkan jendela lama.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+}
+
+let mainWin = null;
+let audienceWin = null;
+
+const projectsRoot = () => path.join(app.getPath('userData'), 'paparan');
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json',
+  '.wasm': 'application/wasm',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+  '.ico': 'image/x-icon',
+};
+
+const ISOLATION_HEADERS = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
+  'Cross-Origin-Resource-Policy': 'cross-origin',
+};
+
+function safeJoin(root, rel) {
+  const target = path.normalize(path.join(root, rel));
+  if (!target.startsWith(path.normalize(root))) return null;
+  return target;
+}
+
+function registerAppProtocol() {
+  protocol.handle('app', async (request) => {
+    const url = new URL(request.url);
+    let rel = decodeURIComponent(url.pathname).replace(/^\/+/, '');
+    let file;
+    if (rel.startsWith('data/')) {
+      file = safeJoin(projectsRoot(), rel.slice(5));
+    } else {
+      if (!rel) rel = 'index.html';
+      file = safeJoin(DIST, rel);
+    }
+    if (!file) return new Response('Forbidden', { status: 403 });
+    try {
+      const body = await fsp.readFile(file);
+      const type = MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
+      return new Response(body, {
+        headers: { 'Content-Type': type, 'Cache-Control': 'no-cache', ...ISOLATION_HEADERS },
+      });
+    } catch {
+      return new Response('Not found', { status: 404 });
+    }
+  });
+}
+
+function pageUrl(hash = '') {
+  const base = DEV_URL || `app://${HOST}/index.html`;
+  return hash ? `${base}#${hash}` : base;
+}
+
+function createMainWindow() {
+  mainWin = new BrowserWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 960,
+    minHeight: 620,
+    backgroundColor: '#0b0d10',
+    title: 'Sorot',
+    icon: path.join(__dirname, '..', 'build', 'icon.png'),
+    autoHideMenuBar: true,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      sandbox: false,
+      backgroundThrottling: false,
+    },
+  });
+  mainWin.once('ready-to-show', () => {
+    mainWin.maximize();
+    mainWin.show();
+  });
+  mainWin.loadURL(pageUrl());
+  mainWin.webContents.on('did-finish-load', () => boostRenderer(mainWin));
+  mainWin.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  mainWin.on('closed', () => {
+    mainWin = null;
+    if (audienceWin && !audienceWin.isDestroyed()) audienceWin.close();
+  });
+}
+
+function externalDisplay() {
+  const primary = screen.getPrimaryDisplay();
+  const mainBounds = mainWin ? mainWin.getBounds() : primary.bounds;
+  const current = screen.getDisplayMatching(mainBounds);
+  return screen.getAllDisplays().find((d) => d.id !== current.id) || null;
+}
+
+function openAudience() {
+  if (audienceWin && !audienceWin.isDestroyed()) {
+    audienceWin.focus();
+    return { ok: true, external: !!externalDisplay() };
+  }
+  const ext = externalDisplay();
+  const b = ext ? ext.bounds : { x: 80, y: 80, width: 960, height: 540 };
+  audienceWin = new BrowserWindow({
+    x: b.x,
+    y: b.y,
+    width: b.width,
+    height: b.height,
+    backgroundColor: '#000000',
+    title: 'Sorot — Layar Penonton',
+    autoHideMenuBar: true,
+    fullscreen: !!ext,
+    frame: !ext,
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: false },
+  });
+  audienceWin.loadURL(pageUrl('/audience'));
+  audienceWin.on('closed', () => {
+    audienceWin = null;
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('audience:closed');
+  });
+  return { ok: true, external: !!ext };
+}
+
+/* ---------- penyimpanan paparan ---------- */
+
+async function readProject(id) {
+  const raw = await fsp.readFile(path.join(projectsRoot(), id, 'project.json'), 'utf8');
+  return JSON.parse(raw);
+}
+
+ipcMain.handle('projects:list', async () => {
+  await fsp.mkdir(projectsRoot(), { recursive: true });
+  const dirs = await fsp.readdir(projectsRoot(), { withFileTypes: true });
+  const out = [];
+  for (const d of dirs) {
+    if (!d.isDirectory()) continue;
+    try {
+      out.push(await readProject(d.name));
+    } catch {
+      /* folder rusak dilewati */
+    }
+  }
+  return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+});
+
+ipcMain.handle('projects:get', async (_e, id) => readProject(id));
+
+ipcMain.handle('projects:create', async () => {
+  const id = `${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
+  await fsp.mkdir(path.join(projectsRoot(), id, 'slides'), { recursive: true });
+  return id;
+});
+
+ipcMain.handle('projects:save', async (_e, project) => {
+  const dir = path.join(projectsRoot(), project.id);
+  await fsp.mkdir(dir, { recursive: true });
+  const tmp = path.join(dir, 'project.json.tmp');
+  await fsp.writeFile(tmp, JSON.stringify(project, null, 2), 'utf8');
+  await fsp.rename(tmp, path.join(dir, 'project.json'));
+  return true;
+});
+
+ipcMain.handle('projects:delete', async (_e, id) => {
+  const dir = safeJoin(projectsRoot(), id);
+  if (!dir || dir === path.normalize(projectsRoot())) return false;
+  await fsp.rm(dir, { recursive: true, force: true });
+  return true;
+});
+
+ipcMain.handle('slides:clear', async (_e, id) => {
+  const dir = path.join(projectsRoot(), id, 'slides');
+  await fsp.rm(dir, { recursive: true, force: true });
+  await fsp.mkdir(dir, { recursive: true });
+  return true;
+});
+
+ipcMain.handle('slides:write', async (_e, id, name, bytes) => {
+  const file = safeJoin(path.join(projectsRoot(), id, 'slides'), name);
+  if (!file) throw new Error('Nama berkas tidak sah');
+  await fsp.writeFile(file, Buffer.from(bytes));
+  return `slides/${name}`;
+});
+
+ipcMain.handle('projects:reveal', async (_e, id) => {
+  shell.openPath(path.join(projectsRoot(), id));
+});
+
+/* ---------- PPTX → gambar lewat PowerPoint (COM) ---------- */
+
+const PPT_SCRIPT = `
+param([string]$src, [string]$out)
+$ErrorActionPreference = 'Stop'
+try { $ppt = New-Object -ComObject PowerPoint.Application } catch { Write-Output 'NO_POWERPOINT'; exit 3 }
+$wasOpen = $ppt.Presentations.Count
+$pres = $ppt.Presentations.Open($src, -1, 0, 0)
+try {
+  $w = 1920
+  $h = [int][Math]::Round(1920 * $pres.PageSetup.SlideHeight / $pres.PageSetup.SlideWidth)
+  $n = $pres.Slides.Count
+  $tmp = $out
+  try {
+    # Ekspor sekaligus; nama berkas bisa berbeda menurut bahasa Office, jadi diurutkan dari angkanya.
+    $pres.Export($tmp, 'PNG', $w, $h)
+    $files = Get-ChildItem $tmp -Filter *.png | Sort-Object { [int](($_.BaseName -replace '\D', '') + '0') / 10 }
+    if ($files.Count -ne $n) { throw 'jumlah berkas tidak cocok' }
+  } catch {
+    Get-ChildItem $tmp | Remove-Item -Force
+    for ($i = 1; $i -le $n; $i++) {
+      $pres.Slides.Item($i).Export((Join-Path $tmp ('{0:D3}.png' -f $i)), 'PNG', $w, $h)
+    }
+    $files = Get-ChildItem $tmp -Filter *.png | Sort-Object Name
+  }
+  $i = 0
+  foreach ($f in $files) {
+    $i++
+    Rename-Item -LiteralPath $f.FullName ('s{0:D3}.png' -f $i)
+  }
+  Write-Output ("OK {0} {1} {2}" -f $i, $w, $h)
+} finally {
+  $pres.Close()
+  if ($wasOpen -eq 0) { $ppt.Quit() }
+  [System.Runtime.InteropServices.Marshal]::ReleaseComObject($ppt) | Out-Null
+}
+`;
+
+ipcMain.handle('pptx:export', async (_e, id, srcPath) => {
+  const dest = path.join(projectsRoot(), id, 'slides');
+  await fsp.mkdir(dest, { recursive: true });
+  // PowerPoint menulis ke folder sementara dulu; beberapa pemasangan Windows
+  // memvirtualisasi AppData sehingga PowerPoint tidak bisa melihat folder data aplikasi.
+  const out = await fsp.mkdtemp(path.join(os.tmpdir(), 'sorot-ppt-'));
+  const scriptFile = path.join(app.getPath('temp'), `sorot-ppt-${process.pid}.ps1`);
+  // BOM agar PowerShell 5 membaca skrip sebagai UTF-8
+  await fsp.writeFile(scriptFile, String.fromCharCode(0xfeff) + PPT_SCRIPT, 'utf8');
+  return new Promise((resolve) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptFile, '-src', srcPath, '-out', out],
+      { windowsHide: true, timeout: 10 * 60 * 1000 },
+      async (err, stdout) => {
+        fs.rm(scriptFile, () => {});
+        const text = String(stdout || '');
+        const m = text.match(/OK (\d+) (\d+) (\d+)/);
+        if (m) {
+          const count = Number(m[1]);
+          const files = [];
+          try {
+            for (let i = 1; i <= count; i++) {
+              const name = `s${String(i).padStart(3, '0')}.png`;
+              await fsp.copyFile(path.join(out, name), path.join(dest, name));
+              files.push(`slides/${name}`);
+            }
+          } catch (copyErr) {
+            resolve({ ok: false, reason: 'failed', detail: String(copyErr.message) });
+            return;
+          } finally {
+            fs.rm(out, { recursive: true, force: true }, () => {});
+          }
+          resolve({ ok: true, files, aspect: Number(m[2]) / Number(m[3]) });
+          return;
+        }
+        fs.rm(out, { recursive: true, force: true }, () => {});
+        if (text.includes('NO_POWERPOINT')) {
+          resolve({ ok: false, reason: 'no-powerpoint' });
+        } else {
+          resolve({ ok: false, reason: 'failed', detail: String(err?.message || text).slice(0, 400) });
+        }
+      },
+    );
+  });
+});
+
+/* ---------- jendela & tampilan ---------- */
+
+ipcMain.handle('audience:open', () => openAudience());
+ipcMain.handle('audience:close', () => {
+  if (audienceWin && !audienceWin.isDestroyed()) audienceWin.close();
+  return true;
+});
+ipcMain.handle('audience:isOpen', () => !!(audienceWin && !audienceWin.isDestroyed()));
+ipcMain.handle('displays:count', () => screen.getAllDisplays().length);
+
+ipcMain.handle('win:fullscreen', (e, on) => {
+  const w = BrowserWindow.fromWebContents(e.sender);
+  if (!w) return false;
+  w.setFullScreen(typeof on === 'boolean' ? on : !w.isFullScreen());
+  return w.isFullScreen();
+});
+
+ipcMain.handle('app:info', () => ({ version: app.getVersion(), dataDir: projectsRoot() }));
+
+ipcMain.handle('dialog:confirm', async (e, message, detail) => {
+  const w = BrowserWindow.fromWebContents(e.sender);
+  const r = await dialog.showMessageBox(w, {
+    type: 'question',
+    buttons: ['Batal', 'Ya, lanjutkan'],
+    defaultId: 1,
+    cancelId: 0,
+    message,
+    detail,
+  });
+  return r.response === 1;
+});
+
+/* ---------- start ---------- */
+
+app.on('second-instance', () => {
+  if (mainWin) {
+    if (mainWin.isMinimized()) mainWin.restore();
+    mainWin.focus();
+  }
+});
+
+app.whenReady().then(async () => {
+  registerAppProtocol();
+
+  // Hanya mikrofon yang diizinkan; permintaan lain ditolak.
+  const allowed = new Set(['media', 'clipboard-sanitized-write', 'fullscreen']);
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(allowed.has(permission)));
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => allowed.has(permission));
+
+  if (process.platform === 'darwin') {
+    await systemPreferences.askForMediaAccess('microphone').catch(() => {});
+  }
+
+  createMainWindow();
+});
+
+app.on('window-all-closed', () => app.quit());
