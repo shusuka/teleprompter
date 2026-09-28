@@ -1,4 +1,4 @@
-const { app, BrowserWindow, protocol, ipcMain, screen, shell, dialog, session, systemPreferences } = require('electron');
+const { app, BrowserWindow, protocol, ipcMain, screen, shell, dialog, session, systemPreferences, safeStorage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -381,6 +381,38 @@ ipcMain.handle('win:fullscreen', (e, on) => {
 
 ipcMain.handle('app:info', () => ({ version: app.getVersion(), dataDir: projectsRoot() }));
 
+/* ---------- rahasia (API key), dienkripsi dengan akun Windows ---------- */
+
+const secretsFile = () => path.join(app.getPath('userData'), 'secrets.json');
+
+async function readSecrets() {
+  try {
+    return JSON.parse(await fsp.readFile(secretsFile(), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+ipcMain.handle('secret:get', async (_e, name) => {
+  const all = await readSecrets();
+  const v = all[name];
+  if (!v) return '';
+  try {
+    return v.enc && safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(v.data, 'base64')) : v.data;
+  } catch {
+    return '';
+  }
+});
+
+ipcMain.handle('secret:set', async (_e, name, value) => {
+  const all = await readSecrets();
+  if (!value) delete all[name];
+  else if (safeStorage.isEncryptionAvailable()) all[name] = { enc: true, data: safeStorage.encryptString(value).toString('base64') };
+  else all[name] = { enc: false, data: value };
+  await writeJsonSafely(secretsFile(), JSON.stringify(all));
+  return true;
+});
+
 ipcMain.handle('dialog:confirm', async (e, message, detail) => {
   const w = BrowserWindow.fromWebContents(e.sender);
   const r = await dialog.showMessageBox(w, {
@@ -392,6 +424,61 @@ ipcMain.handle('dialog:confirm', async (e, message, detail) => {
     detail,
   });
   return r.response === 1;
+});
+
+/* ---------- pembaruan otomatis ---------- */
+
+const REPO = 'shusuka/teleprompter';
+let updater = null;
+
+function isNewer(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+  }
+  return false;
+}
+
+let lastUpdate = null;
+function sendUpdate(status) {
+  lastUpdate = status;
+  if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('update:status', status);
+}
+
+async function checkUpdates() {
+  if (!app.isPackaged) return;
+  // Versi portable tidak bisa memperbarui diri; cukup beri tahu ada versi baru.
+  if (process.env.PORTABLE_EXECUTABLE_DIR) {
+    try {
+      const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } });
+      const j = await r.json();
+      const v = String(j.tag_name || '').replace(/^v/, '');
+      if (v && isNewer(v, app.getVersion())) sendUpdate({ state: 'portable', version: v, url: j.html_url });
+    } catch {
+      /* luring */
+    }
+    return;
+  }
+  try {
+    ({ autoUpdater: updater } = require('electron-updater'));
+    updater.autoDownload = true;
+    updater.autoInstallOnAppQuit = true;
+    updater.on('update-available', (i) => sendUpdate({ state: 'downloading', version: i.version }));
+    updater.on('update-downloaded', (i) => sendUpdate({ state: 'ready', version: i.version }));
+    updater.on('error', () => {});
+    await updater.checkForUpdates();
+  } catch {
+    /* luring atau rilis belum tersedia */
+  }
+}
+
+ipcMain.handle('update:last', () => lastUpdate);
+ipcMain.handle('update:install', () => {
+  if (updater && lastUpdate?.state === 'ready') updater.quitAndInstall(false, true);
+});
+ipcMain.handle('open:external', (_e, url) => {
+  if (/^https:\/\/github\.com\//.test(url)) shell.openExternal(url);
 });
 
 /* ---------- start ---------- */
@@ -416,6 +503,7 @@ app.whenReady().then(async () => {
   }
 
   createMainWindow();
+  mainWin.webContents.once('did-finish-load', () => setTimeout(checkUpdates, 4000));
 });
 
 app.on('window-all-closed', () => app.quit());

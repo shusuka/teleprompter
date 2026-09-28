@@ -40,3 +40,35 @@ async function route() {
 
 window.addEventListener('hashchange', route);
 route();
+
+/* ---------- pemberitahuan versi baru ---------- */
+
+function showUpdate(s) {
+  if (!s) return;
+  let bar = document.getElementById('update-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'update-bar';
+    bar.setAttribute('role', 'status');
+    document.body.append(bar);
+  }
+  const v = String(s.version).replace(/[^\d.]/g, '');
+  if (s.state === 'downloading') {
+    bar.innerHTML = `<span>Mengunduh Sorot versi ${v} di latar belakang…</span>`;
+  } else if (s.state === 'ready') {
+    bar.innerHTML = `<span>Sorot versi ${v} siap dipasang.</span><button class="btn sm primary" data-u="install">Pasang dan mulai ulang</button><button class="btn sm ghost" data-u="later">Nanti saja</button>`;
+  } else if (s.state === 'portable') {
+    bar.innerHTML = `<span>Sorot versi ${v} tersedia.</span><button class="btn sm primary" data-u="open">Unduh</button><button class="btn sm ghost" data-u="later">Nanti saja</button>`;
+  }
+  bar.onclick = (e) => {
+    const act = e.target.closest('[data-u]')?.dataset.u;
+    if (act === 'install') window.sorot.installUpdate();
+    else if (act === 'open') window.sorot.openExternal(s.url);
+    if (act === 'later' || act === 'open') bar.remove();
+  };
+}
+
+if (window.sorot?.onUpdate) {
+  window.sorot.onUpdate(showUpdate);
+  window.sorot.lastUpdate().then(showUpdate);
+}

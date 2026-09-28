@@ -4,7 +4,9 @@ Prompter paparan untuk narasumber. Naskah tampil di bagian atas layar, dekat web
 
 ## Fitur
 
-- **Naskah mengikuti suara.** Pengenal suara Whisper berjalan di komputer sendiri (bahasa Indonesia atau Inggris). Internet hanya dipakai sekali untuk mengunduh model.
+- **Naskah mengikuti suara**, dengan dua pilihan mesin:
+  - *Di komputer (Whisper)*: gratis dan offline. Internet hanya dipakai sekali untuk mengunduh model. Jedanya 1–2 detik.
+  - *Deepgram Nova-3 (cloud)*: butuh internet dan API key dari [console.deepgram.com](https://console.deepgram.com/signup). Jedanya ±0,3 detik dan jauh lebih akurat untuk bahasa Indonesia. Kata-kata khas naskah dikirim sebagai petunjuk (keyterm) agar lebih mudah dikenali.
 - **Tiga cara gerak:** Suara, Otomatis (kecepatan kata/menit), dan Manual (panah atau klik kata).
 - **Slide pindah otomatis** saat Anda mulai membaca naskah slide berikutnya.
 - **Unggah slide** dalam bentuk PDF, PPTX (butuh Microsoft PowerPoint terpasang), atau kumpulan gambar.
@@ -52,4 +54,6 @@ npm run dist:local  # sama, memakai Electron dari node_modules (bila unduhan/eks
 
 Membuat tag `v*` (mis. `v1.0.0`) di GitHub akan menjalankan workflow yang membangun exe dan melampirkannya ke halaman Releases.
 
-Data paparan tersimpan di `%APPDATA%\Sorot\paparan`.
+Versi installer memeriksa pembaruan setiap kali dibuka, mengunduhnya di latar belakang, lalu menawarkan tombol "Pasang dan mulai ulang". Versi portable hanya memberi tahu bahwa ada versi baru.
+
+Data paparan tersimpan di `%APPDATA%\Sorot\paparan`. API key disimpan terenkripsi di `%APPDATA%\Sorot\secrets.json`.

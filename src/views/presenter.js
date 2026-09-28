@@ -1,4 +1,5 @@
-import { store, slideUrls, isDesktop, desktopApi } from '../store.js';
+import { store, slideUrls, isDesktop, desktopApi, getSecret, setSecret } from '../store.js';
+import { DeepgramFollower, pickKeyterms } from '../speech/deepgram.js';
 import { tokenize, alignHeard, wordsToNorm } from '../script.js';
 import { loadSettings, saveSettings } from '../settings.js';
 import { VoiceFollower, loadModel, modelLoaded, loadedDevice, listMics, MODELS, LANGUAGES, DEVICES } from '../speech/recognizer.js';
@@ -268,7 +269,14 @@ export async function renderPresenter(root, go, id, query) {
     if (settings.mode === 'voice') {
       runBtn.disabled = true;
       try {
-        if (!modelLoaded(settings.model, settings.device)) {
+        const cloud = settings.engine === 'deepgram';
+        const apiKey = cloud ? await getSecret('deepgram') : '';
+        if (cloud && !apiKey) {
+          runBtn.disabled = false;
+          showNote('<strong>API key Deepgram belum diisi.</strong><span>Buka Pengaturan › Pengenal suara, tempel API key, lalu tekan Simpan. Atau pilih mesin "Di komputer".</span>', 'warn');
+          return;
+        }
+        if (!cloud && !modelLoaded(settings.model, settings.device)) {
           const m = MODELS.find((x) => x.id === settings.model) || MODELS[1];
           showNote(`<strong>Menyiapkan pengenal suara</strong><span>Model ${esc(m.label)} (${m.size}) diunduh sekali saja lalu tersimpan di komputer.</span><progress max="1" value="0"></progress><small></small>`);
           await loadModel(
@@ -283,15 +291,24 @@ export async function renderPresenter(root, go, id, query) {
           );
           if (destroyed) return;
         }
-        follower = new VoiceFollower({ model: settings.model, language: settings.language, deviceId: settings.micId });
+        if (cloud) showNote('<strong>Menyambung ke Deepgram…</strong>');
+        follower = cloud
+          ? new DeepgramFollower({ apiKey, keyterms: pickKeyterms(words), language: settings.language, deviceId: settings.micId })
+          : new VoiceFollower({ model: settings.model, language: settings.language, deviceId: settings.micId });
         follower.addEventListener('heard', onHeard);
         follower.addEventListener('level', onLevel);
-        follower.addEventListener('error', (e) => toast(`Pengenal suara: ${e.detail.message}`, 'error'));
+        follower.addEventListener('error', (e) => {
+          if (e.detail.fatal) {
+            stopRunning();
+            showNote(`<strong>Pengenal suara berhenti.</strong><span>${esc(e.detail.message)}</span>`, 'error');
+          } else toast(`Pengenal suara: ${e.detail.message}`, 'error');
+        });
         await follower.start();
         state.confirmed = state.display;
         state.ahead = 0;
         showNote('');
       } catch (err) {
+        follower?.stop();
         follower = null;
         runBtn.disabled = false;
         const msg = String(err?.message || err);
@@ -328,7 +345,7 @@ export async function renderPresenter(root, go, id, query) {
 
   function onHeard(e) {
     const { text, sentAt, latency } = e.detail;
-    const dev = loadedDevice() === 'webgpu' ? 'GPU' : 'CPU';
+    const dev = settings.engine === 'deepgram' ? 'Deepgram' : loadedDevice() === 'webgpu' ? 'GPU' : 'CPU';
     heardEl.innerHTML = `<b>${(latency / 1000).toFixed(1).replace('.', ',')} dtk · ${dev}</b> ${esc(text.slice(-64))}`;
     heardEl.title = 'Jeda pengenalan suara. Bila selalu di atas 2 detik, pilih model Cepat di Pengaturan.';
     if (!text) return;
@@ -445,20 +462,31 @@ export async function renderPresenter(root, go, id, query) {
           ${rangeRow('wpm', 'Kecepatan mode Otomatis', 60, 220, 5, (v) => `${v} kata/menit`)}
         </fieldset>
         <fieldset><legend>Pengenal suara</legend>
+          <div class="field"><span class="label">Mesin</span>
+            <div class="models" role="radiogroup" aria-label="Mesin pengenal suara">
+              <button role="radio" data-engine="local" aria-checked="${settings.engine !== 'deepgram'}"><strong>Di komputer (Whisper)</strong><span>Gratis dan bisa offline. Jeda 1–2 detik, akurasi sedang.</span></button>
+              <button role="radio" data-engine="deepgram" aria-checked="${settings.engine === 'deepgram'}"><strong>Deepgram Nova-3 (cloud)</strong><span>Butuh internet dan API key. Jeda ±0,3 detik, jauh lebih akurat.</span></button>
+            </div></div>
+          <div class="field" data-for-engine="deepgram">
+            <label class="label" for="dg-key">API key Deepgram</label>
+            <div class="key-row"><input id="dg-key" type="password" autocomplete="off" spellcheck="false" placeholder="Tempel API key di sini" />
+              <button class="btn" data-act="save-key">Simpan</button></div>
+            <p class="help">Buat akun di <a href="https://console.deepgram.com/signup" target="_blank" rel="noreferrer">console.deepgram.com</a>. Akun baru mendapat kredit gratis. Buka menu API Keys, buat key, lalu tempel di sini. Key disimpan terenkripsi di komputer ini. Kata-kata khas dari naskah Anda ikut dikirim sebagai petunjuk agar lebih mudah dikenali.</p>
+          </div>
           <label class="field"><span class="label">Mikrofon</span>
             <select data-key="micId"><option value="">Bawaan sistem</option>${mics
               .map((m, i) => `<option value="${esc(m.deviceId)}" ${m.deviceId === settings.micId ? 'selected' : ''}>${esc(m.label || `Mikrofon ${i + 1}`)}</option>`)
               .join('')}</select></label>
           <label class="field"><span class="label">Bahasa naskah</span>
             <select data-key="language">${LANGUAGES.map((l) => `<option value="${l.id}" ${l.id === settings.language ? 'selected' : ''}>${l.label}</option>`).join('')}</select></label>
-          <label class="field"><span class="label">Pemroses</span>
+          <label class="field" data-for-engine="local"><span class="label">Pemroses</span>
             <select data-key="device">${DEVICES.map((d) => `<option value="${d.id}" ${d.id === settings.device ? 'selected' : ''}>${d.label}</option>`).join('')}</select></label>
-          <div class="field"><span class="label">Model</span>
+          <div class="field" data-for-engine="local"><span class="label">Model</span>
             <div class="models" role="radiogroup" aria-label="Model pengenal suara">${MODELS.map(
               (m) => `<button role="radio" data-model="${m.id}" aria-checked="${m.id === settings.model}"><strong>${m.label}</strong><span>${m.size} · ${m.note}</span></button>`,
             ).join('')}</div></div>
-          <button class="btn ghost full" data-act="preload">Unduh model sekarang (agar siap tanpa internet)</button>
-          <p class="help">Suara diolah di komputer ini. Internet hanya dipakai sekali untuk mengunduh model.</p>
+          <button class="btn ghost full" data-act="preload" data-for-engine="local">Unduh model sekarang (agar siap tanpa internet)</button>
+          <p class="help" data-for-engine="local">Suara diolah di komputer ini. Internet hanya dipakai sekali untuk mengunduh model.</p>
         </fieldset>
         <fieldset><legend>Pintasan</legend>
           <dl class="keys">
@@ -495,6 +523,33 @@ export async function renderPresenter(root, go, id, query) {
         applyTypography();
         persistSettings();
       });
+    });
+    const syncEngine = () =>
+      $$('[data-for-engine]', drawer).forEach((x) => (x.hidden = x.dataset.forEngine !== (settings.engine === 'deepgram' ? 'deepgram' : 'local')));
+    syncEngine();
+    const keyInput = $('#dg-key', drawer);
+    getSecret('deepgram').then((k) => {
+      if (k) keyInput.placeholder = `Tersimpan (…${k.slice(-4)}). Tempel key baru untuk mengganti.`;
+    });
+    $('[data-act="save-key"]', drawer).onclick = async () => {
+      const v = keyInput.value.trim();
+      if (!v) return toast('Tempel API key dulu.', 'warn');
+      await setSecret('deepgram', v);
+      keyInput.value = '';
+      keyInput.placeholder = `Tersimpan (…${v.slice(-4)}). Tempel key baru untuk mengganti.`;
+      toast('API key Deepgram tersimpan.');
+    };
+    $$('[data-engine]', drawer).forEach((b) => {
+      b.onclick = () => {
+        settings.engine = b.dataset.engine;
+        $$('[data-engine]', drawer).forEach((x) => x.setAttribute('aria-checked', String(x === b)));
+        persistSettings();
+        syncEngine();
+        if (follower) {
+          stopRunning();
+          toast('Mesin suara diganti. Tekan Mulai mendengar lagi.');
+        }
+      };
     });
     $$('select', drawer).forEach((sel) => {
       sel.addEventListener('change', () => {

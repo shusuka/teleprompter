@@ -17,7 +17,17 @@ contextBridge.exposeInMainWorld('sorot', {
   displayCount: () => ipcRenderer.invoke('displays:count'),
   toggleFullscreen: (on) => ipcRenderer.invoke('win:fullscreen', on),
   info: () => ipcRenderer.invoke('app:info'),
+  getSecret: (name) => ipcRenderer.invoke('secret:get', name),
+  setSecret: (name, value) => ipcRenderer.invoke('secret:set', name, value),
   confirm: (message, detail) => ipcRenderer.invoke('dialog:confirm', message, detail),
+  lastUpdate: () => ipcRenderer.invoke('update:last'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  openExternal: (url) => ipcRenderer.invoke('open:external', url),
+  onUpdate: (cb) => {
+    const h = (_e, s) => cb(s);
+    ipcRenderer.on('update:status', h);
+    return () => ipcRenderer.removeListener('update:status', h);
+  },
   onAudienceClosed: (cb) => {
     const h = () => cb();
     ipcRenderer.on('audience:closed', h);

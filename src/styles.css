@@ -1251,6 +1251,26 @@ body[data-view='present'] {
   border-color: var(--accent);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
+.key-row {
+  display: flex;
+  gap: 8px;
+}
+.key-row input {
+  flex: 1;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+}
+.key-row input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+.help a {
+  color: var(--accent);
+}
 .keys {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -1309,6 +1329,33 @@ body.audience-body {
   font-size: 18px;
 }
 .audience-wait[hidden] {
+  display: none;
+}
+
+/* ---------- versi baru ---------- */
+
+#update-bar {
+  position: fixed;
+  z-index: 90;
+  right: 20px;
+  bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  max-width: min(560px, calc(100vw - 40px));
+  padding: 10px 12px 10px 16px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid rgba(45, 212, 191, 0.5);
+  font-size: 14px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+#update-bar span {
+  flex: 1 1 200px;
+}
+/* jangan mengganggu saat sedang tampil */
+body[data-view='present'] #update-bar {
   display: none;
 }
 

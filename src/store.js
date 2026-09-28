@@ -104,4 +104,23 @@ export async function confirmAction(message, detail = '') {
   return window.confirm(detail ? `${message}\n\n${detail}` : message);
 }
 
+export async function getSecret(name) {
+  if (isDesktop) return api.getSecret(name);
+  try {
+    return localStorage.getItem(`sorot.secret.${name}`) || '';
+  } catch {
+    return '';
+  }
+}
+
+export async function setSecret(name, value) {
+  if (isDesktop) return api.setSecret(name, value);
+  try {
+    if (value) localStorage.setItem(`sorot.secret.${name}`, value);
+    else localStorage.removeItem(`sorot.secret.${name}`);
+  } catch {
+    /* penyimpanan dinonaktifkan */
+  }
+}
+
 export const desktopApi = api;

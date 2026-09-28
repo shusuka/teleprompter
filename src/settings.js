@@ -11,6 +11,7 @@ export const DEFAULTS = {
   mirror: false,
   wpm: 120,
   model: 'onnx-community/whisper-base',
+  engine: 'local', // local = Whisper di komputer, deepgram = cloud dengan API key
   language: 'indonesian',
   device: 'auto', // auto | wasm | webgpu
   micId: '',
