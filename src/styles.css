@@ -849,6 +849,37 @@ body[data-view='present'] {
   font-weight: 600;
   cursor: pointer;
 }
+.ppt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    border-color 150ms ease,
+    color 150ms ease;
+}
+.ppt-chip:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.ppt-chip[data-kind='live'] {
+  color: var(--accent);
+  border-color: rgba(45, 212, 191, 0.5);
+}
+.ppt-chip[data-kind='warn'] {
+  color: var(--warn);
+  border-color: rgba(251, 191, 36, 0.5);
+}
 .clock {
   font-variant-numeric: tabular-nums;
   color: var(--text-3);

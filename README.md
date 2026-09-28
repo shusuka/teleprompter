@@ -11,6 +11,7 @@ Prompter paparan untuk narasumber. Naskah tampil di bagian atas layar, dekat web
 - **Slide pindah otomatis** saat Anda mulai membaca naskah slide berikutnya.
 - **Unggah slide** dalam bentuk PDF, PPTX (butuh Microsoft PowerPoint terpasang), atau kumpulan gambar.
 - **Naskah otomatis** dari speaker notes PPTX, atau dari berkas TXT / DOCX / MD dengan penanda `Slide 1`, `Slide 2`, dst.
+- **Sinkron dengan PowerPoint**: tombol *PowerPoint* di bilah atas menempel ke slideshow yang sedang berjalan. Saat Sorot pindah slide (suara, klik, atau clicker), PowerPoint ikut pindah. Saat slide dipindah di PowerPoint, naskah di Sorot ikut melompat. Tombol `B` juga menggelapkan slideshow.
 - **Layar penonton**: slide tampil penuh di proyektor atau layar kedua, dan tombol `B` untuk menggelapkannya.
 - Tata letak naskah di atas atau di bawah, ukuran huruf, jarak baris, garis baca, mode cermin untuk kaca teleprompter, timer, dan jam.
 

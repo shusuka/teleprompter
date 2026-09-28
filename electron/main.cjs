@@ -426,6 +426,145 @@ ipcMain.handle('dialog:confirm', async (e, message, detail) => {
   return r.response === 1;
 });
 
+/* ---------- sinkron dengan slideshow PowerPoint yang sedang berjalan ---------- */
+
+// Proses PowerShell kecil yang terus hidup: membaca perintah JSON per baris dari stdin
+// dan menulis keadaan slideshow ke stdout setiap kali berubah. PowerPoint tidak pernah
+// dibuka oleh Sorot; hanya menempel ke PowerPoint yang sudah berjalan.
+const PPT_BRIDGE = `
+$ErrorActionPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+function Get-Ppt { try { [Runtime.InteropServices.Marshal]::GetActiveObject('PowerPoint.Application') } catch { $null } }
+function Get-State {
+  $app = Get-Ppt
+  if (-not $app) { return @{ ok = $false; reason = 'closed' } }
+  $n = 0
+  try { $n = $app.SlideShowWindows.Count } catch { return @{ ok = $false; reason = 'busy' } }
+  if ($n -lt 1) {
+    $open = 0; try { $open = $app.Presentations.Count } catch {}
+    return @{ ok = $false; reason = 'noshow'; open = $open }
+  }
+  try {
+    $w = $app.SlideShowWindows.Item(1)
+    $v = $w.View
+    $st = [int]$v.State
+    $idx = -1; try { $idx = [int]$v.Slide.SlideIndex } catch {}
+    return @{ ok = $true; slide = $idx; count = [int]$w.Presentation.Slides.Count; name = [string]$w.Presentation.Name; state = $st }
+  } catch { return @{ ok = $false; reason = 'busy' } }
+}
+function Run-Cmd($c) {
+  $app = Get-Ppt
+  if (-not $app) { return }
+  if ($c.cmd -eq 'start') {
+    if ($app.SlideShowWindows.Count -lt 1 -and $app.Presentations.Count -gt 0) {
+      $w = $app.ActivePresentation.SlideShowSettings.Run()
+      if ([int]$c.slide -gt 1) { $w.View.GotoSlide([int]$c.slide) }
+    }
+    return
+  }
+  if ($app.SlideShowWindows.Count -lt 1) { return }
+  $v = $app.SlideShowWindows.Item(1).View
+  if ($c.cmd -eq 'goto') { $v.GotoSlide([int]$c.slide) }
+  elseif ($c.cmd -eq 'black') { if ($c.on) { $v.State = 3 } else { $v.State = 1 } }
+}
+# Console.In di PowerShell 5 selalu memblokir; baca stream mentah di thread latar.
+$in = [Console]::OpenStandardInput()
+$buf = New-Object byte[] 4096
+$pending = ''
+$task = $in.ReadAsync($buf, 0, $buf.Length)
+$last = ''
+while ($true) {
+  while ($task.IsCompleted) {
+    $n = $task.Result
+    if ($n -le 0) { exit 0 }
+    $pending += [Text.Encoding]::UTF8.GetString($buf, 0, $n)
+    while (($i = $pending.IndexOf([char]10)) -ge 0) {
+      $line = $pending.Substring(0, $i).Trim()
+      $pending = $pending.Substring($i + 1)
+      if ($line) { try { Run-Cmd ($line | ConvertFrom-Json) } catch {} }
+    }
+    $task = $in.ReadAsync($buf, 0, $buf.Length)
+  }
+  $j = (Get-State) | ConvertTo-Json -Compress
+  if ($j -ne $last) { [Console]::Out.WriteLine($j); [Console]::Out.Flush(); $last = $j }
+  Start-Sleep -Milliseconds 150
+}
+`;
+
+let pptProc = null;
+let pptWatchers = new Set();
+let pptLast = null;
+
+function pptBroadcast(s) {
+  pptLast = s;
+  for (const wc of pptWatchers) if (!wc.isDestroyed()) wc.send('ppt:status', s);
+}
+
+async function pptStart() {
+  if (pptProc) return;
+  const scriptFile = path.join(app.getPath('temp'), `sorot-ppt-bridge-${process.pid}.ps1`);
+  await fsp.writeFile(scriptFile, String.fromCharCode(0xfeff) + PPT_BRIDGE, 'utf8');
+  const { spawn } = require('node:child_process');
+  const proc = spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', scriptFile], { windowsHide: true });
+  pptProc = proc;
+  let buf = '';
+  proc.stdout.setEncoding('utf8');
+  proc.stdout.on('data', (d) => {
+    buf += d;
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (!line.startsWith('{')) continue;
+      try {
+        pptBroadcast(JSON.parse(line));
+      } catch {
+        /* baris tidak utuh */
+      }
+    }
+  });
+  proc.on('exit', () => {
+    if (pptProc === proc) {
+      pptProc = null;
+      pptBroadcast({ ok: false, reason: 'stopped' });
+    }
+    fs.rm(scriptFile, () => {});
+  });
+}
+
+function pptStop() {
+  if (!pptProc) return;
+  try {
+    pptProc.stdin.end();
+  } catch {
+    /* sudah berhenti */
+  }
+  const p = pptProc;
+  pptProc = null;
+  setTimeout(() => p.kill(), 1500);
+}
+
+ipcMain.handle('ppt:watch', async (e, on) => {
+  if (on) {
+    pptWatchers.add(e.sender);
+    e.sender.once('destroyed', () => {
+      pptWatchers.delete(e.sender);
+      if (!pptWatchers.size) pptStop();
+    });
+    await pptStart();
+    return pptLast;
+  }
+  pptWatchers.delete(e.sender);
+  if (!pptWatchers.size) pptStop();
+  return null;
+});
+
+ipcMain.handle('ppt:cmd', (_e, cmd) => {
+  if (pptProc?.stdin.writable) pptProc.stdin.write(`${JSON.stringify(cmd)}\n`);
+});
+
+app.on('before-quit', pptStop);
+
 /* ---------- pembaruan otomatis ---------- */
 
 const REPO = 'shusuka/teleprompter';

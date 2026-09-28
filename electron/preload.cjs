@@ -20,6 +20,13 @@ contextBridge.exposeInMainWorld('sorot', {
   getSecret: (name) => ipcRenderer.invoke('secret:get', name),
   setSecret: (name, value) => ipcRenderer.invoke('secret:set', name, value),
   confirm: (message, detail) => ipcRenderer.invoke('dialog:confirm', message, detail),
+  pptWatch: (on) => ipcRenderer.invoke('ppt:watch', on),
+  pptCmd: (cmd) => ipcRenderer.invoke('ppt:cmd', cmd),
+  onPpt: (cb) => {
+    const h = (_e, s) => cb(s);
+    ipcRenderer.on('ppt:status', h);
+    return () => ipcRenderer.removeListener('ppt:status', h);
+  },
   lastUpdate: () => ipcRenderer.invoke('update:last'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   openExternal: (url) => ipcRenderer.invoke('open:external', url),

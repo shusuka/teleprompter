@@ -16,6 +16,7 @@ export const DEFAULTS = {
   device: 'auto', // auto | wasm | webgpu
   micId: '',
   autoSlide: true,
+  pptSync: false, // ikuti/gerakkan slideshow PowerPoint yang sedang berjalan
   showClock: true,
   targetMinutes: 0,
 };

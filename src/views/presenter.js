@@ -50,6 +50,7 @@ export async function renderPresenter(root, go, id, query) {
         </div>
         <button class="timer" data-act="timer" title="Klik untuk mengulang waktu">${icon('clock', 16)}<span>0:00</span></button>
         <span class="clock" aria-hidden="true"></span>
+        ${isDesktop ? `<button class="ppt-chip" data-act="ppt" aria-pressed="false" title="Sinkron dengan slideshow PowerPoint yang sedang berjalan">${icon('link', 16)}<span>PowerPoint</span></button>` : ''}
         <button class="btn icon-only ghost" data-act="audience" aria-label="Layar penonton" title="Tampilkan slide di layar kedua / proyektor">${icon('monitor')}</button>
         <button class="btn icon-only ghost" data-act="fullscreen" aria-label="Layar penuh" title="Layar penuh (F)">${icon('maximize')}</button>
         <button class="btn icon-only ghost" data-act="settings" aria-label="Pengaturan" aria-expanded="false" title="Pengaturan">${icon('settings')}</button>
@@ -205,9 +206,10 @@ export async function renderPresenter(root, go, id, query) {
     channel?.postMessage({ type: 'slide', url: urls[state.slide] || '', black: state.blackout, aspect: project.aspect, title: project.title });
   if (channel) channel.onmessage = (e) => e.data?.type === 'hello' && broadcast();
 
-  function showSlide(n, { moveText = true } = {}) {
+  function showSlide(n, { moveText = true, fromPpt = false } = {}) {
     n = Math.max(0, Math.min(slideCount - 1, n));
     state.slide = n;
+    if (!fromPpt) pptGoto(n);
     slideImg.src = urls[n] || '';
     slideImg.alt = `Slide ${n + 1}`;
     slideCountEl.textContent = `${n + 1} / ${slideCount}`;
@@ -218,6 +220,87 @@ export async function renderPresenter(root, go, id, query) {
     if (nx) new Image().src = nx; // pramuat
     broadcast();
     if (moveText) resync(firstWord[n]);
+  }
+
+  /* ---------- sinkron slideshow PowerPoint ---------- */
+
+  const ppt = { on: false, status: null, sentSlide: 0, sentAt: 0 };
+  let offPpt = () => {};
+
+  function pptGoto(n) {
+    if (!ppt.on || !ppt.status?.ok) return;
+    if (ppt.status.slide === n + 1) return;
+    ppt.sentSlide = n + 1;
+    ppt.sentAt = performance.now();
+    desktopApi.pptCmd({ cmd: 'goto', slide: n + 1 });
+  }
+
+  function renderPptChip() {
+    const chip = $('[data-act="ppt"]', view);
+    if (!chip) return;
+    const s = ppt.status;
+    let text = 'PowerPoint';
+    let kind = '';
+    if (ppt.on) {
+      if (!s || s.reason === 'stopped') text = 'Menyambung…';
+      else if (s.ok && s.count !== slideCount) {
+        text = `PPT ${s.slide}/${s.count} · jumlah slide beda`;
+        kind = 'warn';
+      } else if (s.ok) {
+        text = s.state === 5 ? 'PPT selesai' : `PPT ${s.slide} / ${s.count}`;
+        kind = 'live';
+      } else if (s.reason === 'noshow') {
+        text = s.open ? 'PPT: mulai slideshow' : 'PPT: buka berkasnya';
+        kind = 'warn';
+      } else if (s.reason === 'closed') {
+        text = 'PPT belum dibuka';
+        kind = 'warn';
+      }
+    }
+    chip.querySelector('span').textContent = text;
+    chip.dataset.kind = kind;
+    chip.setAttribute('aria-pressed', String(ppt.on));
+    chip.title = !ppt.on
+      ? 'Sinkron dengan slideshow PowerPoint yang sedang berjalan'
+      : s?.ok
+        ? `Tersinkron dengan ${s.name}. Klik untuk memutus.`
+        : s?.reason === 'noshow' && s.open
+          ? 'Klik untuk memulai slideshow PowerPoint dari slide ini'
+          : 'Buka presentasinya di PowerPoint. Klik untuk memutus sinkron.';
+  }
+
+  function onPptStatus(s) {
+    if (!ppt.on || !s) return;
+    ppt.status = s;
+    renderPptChip();
+    if (!s.ok || s.slide < 1 || s.state === 5) return;
+    // Abaikan laporan lama sesaat setelah Sorot sendiri memindahkan slide.
+    if (performance.now() - ppt.sentAt < 900 && s.slide !== ppt.sentSlide) return;
+    const target = s.slide - 1;
+    if (target !== state.slide && target < slideCount) showSlide(target, { fromPpt: true });
+  }
+
+  async function pptToggle() {
+    if (!isDesktop) return;
+    if (ppt.on && ppt.status?.reason === 'noshow' && ppt.status.open) {
+      desktopApi.pptCmd({ cmd: 'start', slide: state.slide + 1 });
+      return;
+    }
+    ppt.on = !ppt.on;
+    settings.pptSync = ppt.on;
+    persistSettings();
+    ppt.status = null;
+    if (ppt.on) {
+      offPpt = desktopApi.onPpt(onPptStatus);
+      const first = await desktopApi.pptWatch(true);
+      if (first) onPptStatus(first);
+      toast('Sinkron PowerPoint aktif. Jalankan slideshow presentasi yang sama di PowerPoint.', 'info', 5000);
+    } else {
+      offPpt();
+      offPpt = () => {};
+      desktopApi.pptWatch(false);
+    }
+    renderPptChip();
   }
 
   /* ---------- mode & jalan ---------- */
@@ -619,6 +702,7 @@ export async function renderPresenter(root, go, id, query) {
     state.blackout = !state.blackout;
     $('.blackout-badge', view).hidden = !state.blackout;
     broadcast();
+    if (ppt.on && ppt.status?.ok) desktopApi.pptCmd({ cmd: 'black', on: state.blackout });
   };
 
   const fullscreen = async () => {
@@ -679,6 +763,8 @@ export async function renderPresenter(root, go, id, query) {
         return updateTimer();
       case 'audience':
         return toggleAudience();
+      case 'ppt':
+        return pptToggle();
       case 'fullscreen':
         return fullscreen();
       case 'settings':
@@ -697,7 +783,7 @@ export async function renderPresenter(root, go, id, query) {
 
   let lastEsc = 0;
   const onKey = (e) => {
-    if (e.target.closest('input, select, textarea') && e.key !== 'Escape') return;
+    if (e.target instanceof Element && e.target.closest('input, select, textarea') && e.key !== 'Escape') return;
     if (e.ctrlKey || e.altKey || e.metaKey) return;
     const k = e.key;
     if (k === ' ' || k === 'Spacebar') {
@@ -803,6 +889,7 @@ export async function renderPresenter(root, go, id, query) {
 
   applyTypography();
   renderModeUi();
+  if (isDesktop && settings.pptSync) pptToggle();
   const startSlide = Math.max(0, Math.min(slideCount - 1, Number(query.get('slide') || 0)));
   showSlide(startSlide, { moveText: false });
   setDisplay(firstWord[startSlide] ?? 0, { instant: true });
@@ -821,6 +908,8 @@ export async function renderPresenter(root, go, id, query) {
     window.removeEventListener('keydown', onKey);
     ro.disconnect();
     offAudience();
+    if (ppt.on) desktopApi.pptWatch(false);
+    offPpt();
     channel?.close();
   };
 }
